@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         jpdb.io Eingabe prüfen mit Empfehlungen
 // @namespace    local.jpdb.input-check
-// @version      1.2
+// @version      1.3
 // @match        https://jpdb.io/review*
 // @match        https://jpdb.io/*/review*
 // @grant        none
@@ -13,6 +13,7 @@
     const KEY_READING = "jpdb_check_reading";
     const KEY_MEANING = "jpdb_check_meaning";
     const KEY_PENDING = "jpdb_check_pending";
+    const KANA_ONLY_MARKER = "__KANA_ONLY__";
 
     function romajiToHiragana(input) {
         let text = (input || "").toLowerCase().trim();
@@ -132,9 +133,6 @@
 
         let html = "";
 
-        console.log("USER:", [...user]);
-        console.log("EXPECTED:", [...expected]);
-
         for (let i = 0; i < expected.length; i++) {
             const char = escapeHtml(expected[i]);
 
@@ -162,28 +160,28 @@
             .split(/\s+/)
             .filter(Boolean)
             .map(word => {
-            const safeWord = escapeHtml(word);
+                const safeWord = escapeHtml(word);
 
-            if (userParts.includes(word)) {
-                return `<span class="jpdb-ok">${safeWord}</span>`;
-            }
+                if (userParts.includes(word)) {
+                    return `<span class="jpdb-ok">${safeWord}</span>`;
+                }
 
-            const matchingPart = userParts.find(part =>
-                                                part.length >= 3 && word.includes(part)
-                                               );
+                const matchingPart = userParts.find(part =>
+                    part.length >= 3 && word.includes(part)
+                );
 
-            if (matchingPart) {
-                const index = word.indexOf(matchingPart);
+                if (matchingPart) {
+                    const index = word.indexOf(matchingPart);
 
-                const before = escapeHtml(word.slice(0, index));
-                const match = escapeHtml(word.slice(index, index + matchingPart.length));
-                const after = escapeHtml(word.slice(index + matchingPart.length));
+                    const before = escapeHtml(word.slice(0, index));
+                    const match = escapeHtml(word.slice(index, index + matchingPart.length));
+                    const after = escapeHtml(word.slice(index + matchingPart.length));
 
-                return `${before}<span class="jpdb-ok">${match}</span><span class="jpdb-missing">${after}</span>`;
-            }
+                    return `${before}<span class="jpdb-ok">${match}</span><span class="jpdb-missing">${after}</span>`;
+                }
 
-            return `<span class="jpdb-missing">${safeWord}</span>`;
-        })
+                return `<span class="jpdb-missing">${safeWord}</span>`;
+            })
             .join(" ");
     }
 
@@ -191,7 +189,9 @@
         if (!correctMeanings.length) return "";
 
         const userWords = new Set(
-            normalizeMeaning(userMeaning).split(/\s+/).filter(Boolean)
+            normalizeMeaning(userMeaning)
+                .split(/\s+/)
+                .filter(w => w.length >= 3)
         );
 
         let best = correctMeanings[0];
@@ -216,10 +216,9 @@
     function getRecommendation(readingResult, meaningResult) {
         const readingCorrect = readingResult.startsWith("✅");
 
-        // Bei Bedeutung zählt ✅ richtig UND 🟡 teilweise richtig als richtig
         const meaningCorrect =
-              meaningResult.startsWith("✅") ||
-              meaningResult.startsWith("🟡");
+            meaningResult.startsWith("✅") ||
+            meaningResult.startsWith("🟡");
 
         if (!readingCorrect && !meaningCorrect) {
             return {
@@ -248,8 +247,6 @@
         };
     }
 
-
-
     function getReveal() {
         return document.querySelector(".review-reveal");
     }
@@ -262,54 +259,83 @@
         );
     }
 
-   function readingFromElement(el) {
-       let result = "";
+    function getDisplayedWord() {
+        const candidates = [...document.querySelectorAll(".plain, a.plain")]
+            .map(el => ({
+                el,
+                text: (el.textContent || "")
+                    .replace(/[\s\u200B-\u200D\uFEFF]/g, "")
+                    .trim(),
+                fontSize: parseFloat(getComputedStyle(el).fontSize) || 0
+            }))
+            .filter(x =>
+                x.text &&
+                x.text.length <= 30 &&
+                /[\u3040-\u30ff\u3400-\u9fff]/.test(x.text)
+            )
+            .sort((a, b) => {
+                if (b.fontSize !== a.fontSize) return b.fontSize - a.fontSize;
+                return a.text.length - b.text.length;
+            });
 
-       el.childNodes.forEach(node => {
-           if (node.nodeType === Node.TEXT_NODE) {
-               result += node.textContent;
-               return;
-           }
+        return candidates[0]?.text || "";
+    }
 
-           if (node.nodeType === Node.ELEMENT_NODE) {
-               const tag = node.tagName.toLowerCase();
+    function isKanaOnlyWord() {
+        const word = getDisplayedWord()
+            .replace(/[ー]/g, "");
 
-               if (tag === "rt" || tag === "rp") return;
+        return word.length > 0 && /^[\u3040-\u309f\u30a0-\u30ff]+$/.test(word);
+    }
 
-               if (tag === "ruby") {
-                   const rt = node.querySelector("rt");
+    function readingFromElement(el) {
+        let result = "";
 
-                   if (rt && rt.textContent.trim()) {
-                       result += rt.textContent.trim();
-                   } else {
-                       result += [...node.childNodes]
-                           .filter(child =>
-                                   child.nodeType === Node.TEXT_NODE ||
-                                   (
-                           child.nodeType === Node.ELEMENT_NODE &&
-                           !["rt", "rp"].includes(child.tagName.toLowerCase())
-                       )
-                                  )
-                           .map(child => child.textContent || "")
-                           .join("");
-                   }
+        el.childNodes.forEach(node => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                result += node.textContent;
+                return;
+            }
 
-    return;
-}
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const tag = node.tagName.toLowerCase();
 
-               result += readingFromElement(node);
-           }
-       });
+                if (tag === "rt" || tag === "rp") return;
 
-       return result;
-   }
+                if (tag === "ruby") {
+                    const rt = node.querySelector("rt");
+
+                    if (rt && rt.textContent.trim()) {
+                        result += rt.textContent.trim();
+                    } else {
+                        result += [...node.childNodes]
+                            .filter(child =>
+                                child.nodeType === Node.TEXT_NODE ||
+                                (
+                                    child.nodeType === Node.ELEMENT_NODE &&
+                                    !["rt", "rp"].includes(child.tagName.toLowerCase())
+                                )
+                            )
+                            .map(child => child.textContent || "")
+                            .join("");
+                    }
+
+                    return;
+                }
+
+                result += readingFromElement(node);
+            }
+        });
+
+        return result;
+    }
 
     function getCorrectReading(reveal) {
         const answerBox = reveal.querySelector(".answer-box") || reveal;
 
         const wordBox =
-              answerBox.querySelector(".plain") ||
-              answerBox;
+            answerBox.querySelector(".plain") ||
+            answerBox;
 
         if (!wordBox) return "";
 
@@ -322,15 +348,15 @@
         const meanings = [];
 
         const meaningRoot =
-              reveal.querySelector(".subsection-meanings") ||
-              [...reveal.querySelectorAll("*")]
-        .find(el => /^meanings$/i.test((el.textContent || "").trim()))
-        ?.parentElement;
+            reveal.querySelector(".subsection-meanings") ||
+            [...reveal.querySelectorAll("*")]
+                .find(el => /^meanings$/i.test((el.textContent || "").trim()))
+                ?.parentElement;
 
         if (meaningRoot) {
             meaningRoot.querySelectorAll("li, .description").forEach(el => {
                 const text = normalizeMeaning(el.textContent)
-                .replace(/^\d+\s+/, ""); // Ordnungszahlen entfernen
+                    .replace(/^\d+\s+/, "");
 
                 if (text) meanings.push(text);
             });
@@ -359,7 +385,6 @@
             return "✅ richtig";
         }
 
-        // Teilweise richtig nur bei sinnvoller Mindestlänge
         if (
             user.length >= 3 &&
             correctList.some(c => c.includes(user) || user.includes(c))
@@ -394,6 +419,11 @@
                 padding: 10px;
                 font-size: 17px;
                 text-align: center;
+            }
+
+            #jpdb-check-box input:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
             }
 
             #jpdb-reading-preview {
@@ -527,7 +557,7 @@
             <div id="jpdb-reading-preview"></div>
             <input id="jpdb-meaning-input" placeholder="Bedeutung">
             <button id="jpdb-check-button" disabled>Prüfen</button>
-            <div id="jpdb-check-result">Bitte Lesung und Bedeutung eingeben.</div>
+            <div id="jpdb-check-result">Bitte Bedeutung eingeben.</div>
         `;
 
         getTarget().appendChild(box);
@@ -542,17 +572,33 @@
         stopJpdbKeybinds(meaning);
 
         function update() {
-            button.disabled =
-                reading.value.trim() === "" ||
-                meaning.value.trim() === "";
+            const kanaOnly = isKanaOnlyWord();
 
-            readingPreview.textContent = reading.value.trim()
-                ? "→ " + normalizeReading(reading.value)
-                : "";
+            reading.disabled = kanaOnly;
+            reading.placeholder = kanaOnly
+                ? "Keine Lesung nötig"
+                : "Lesung";
+
+            if (kanaOnly) {
+                reading.value = "";
+                readingPreview.textContent = "→ keine Lesung nötig";
+                result.textContent = "Bitte Bedeutung eingeben.";
+            } else {
+                readingPreview.textContent = reading.value.trim()
+                    ? "→ " + normalizeReading(reading.value)
+                    : "";
+                result.textContent = "Bitte Lesung und Bedeutung eingeben.";
+            }
+
+            button.disabled =
+                meaning.value.trim() === "" ||
+                (!kanaOnly && reading.value.trim() === "");
         }
 
         reading.addEventListener("blur", () => {
-            reading.value = normalizeReading(reading.value);
+            if (!isKanaOnlyWord()) {
+                reading.value = normalizeReading(reading.value);
+            }
             update();
         });
 
@@ -561,9 +607,13 @@
 
             if (button.disabled) return;
 
-            reading.value = normalizeReading(reading.value);
+            const kanaOnly = isKanaOnlyWord();
 
-            localStorage.setItem(KEY_READING, reading.value);
+            if (!kanaOnly) {
+                reading.value = normalizeReading(reading.value);
+            }
+
+            localStorage.setItem(KEY_READING, kanaOnly ? KANA_ONLY_MARKER : reading.value);
             localStorage.setItem(KEY_MEANING, meaning.value);
             localStorage.setItem(KEY_PENDING, "1");
 
@@ -589,7 +639,9 @@
         reading.addEventListener("keydown", e => {
             if (e.key === "Enter") {
                 e.preventDefault();
-                reading.value = normalizeReading(reading.value);
+                if (!isKanaOnlyWord()) {
+                    reading.value = normalizeReading(reading.value);
+                }
                 update();
                 meaning.focus();
             }
@@ -606,8 +658,14 @@
 
         button.addEventListener("click", submit);
 
+        update();
+
         setTimeout(() => {
-            reading.focus();
+            if (isKanaOnlyWord()) {
+                meaning.focus();
+            } else {
+                reading.focus();
+            }
         }, 50);
     }
 
@@ -620,15 +678,19 @@
 
         addStyle();
 
-        const userReading = normalizeReading(
-            localStorage.getItem(KEY_READING) || ""
-        );
+        const storedReading = localStorage.getItem(KEY_READING) || "";
+        const kanaOnly = storedReading === KANA_ONLY_MARKER;
+
+        const correctReading = getCorrectReading(reveal);
+
+        const userReading = kanaOnly
+            ? correctReading
+            : normalizeReading(storedReading);
 
         const userMeaning = normalizeMeaning(
             localStorage.getItem(KEY_MEANING) || ""
         );
 
-        const correctReading = getCorrectReading(reveal);
         const correctMeanings = getCorrectMeanings(reveal);
 
         const bestMeaning = getBestMeaning(
@@ -636,10 +698,12 @@
             correctMeanings
         );
 
-        const readingResult = classifyReading(
-            userReading,
-            correctReading
-        );
+        const readingResult = kanaOnly
+            ? "✅ richtig"
+            : classifyReading(
+                userReading,
+                correctReading
+            );
 
         const meaningResult = classifyMeaning(
             userMeaning,
@@ -656,11 +720,11 @@
 
         box.innerHTML = `
             <div id="jpdb-check-result">
-                Lesung: ${readingResult}<br>
+                Lesung: ${readingResult}${kanaOnly ? " <small>(Kana-Wort)</small>" : ""}<br>
                 Bedeutung: ${meaningResult}<br>
 
                 <small>
-                    Deine Lesung: ${escapeHtml(userReading)}<br>
+                    Deine Lesung: ${kanaOnly ? "keine Eingabe nötig" : escapeHtml(userReading)}<br>
                     Erwartete Lesung:
                     <div class="jpdb-highlight-line">
                         ${highlightReading(userReading, correctReading)}
